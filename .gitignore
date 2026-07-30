@@ -1,0 +1,4 @@
+fof_synth
+*.wav
+*.o
+.DS_Store
