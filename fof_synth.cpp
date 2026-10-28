@@ -3,9 +3,10 @@
 // FOF (Fonction d'Onde Formantique) vowel synthesiser, C++ port.
 // Port of an existing MATLAB/Python implementation.
 //
-// Build:  g++ -std=c++17 -O2 -o fof_synth fof_synth.cpp
+// Build:  g++ -std=c++17 -O2 -Wall -Wextra -o fof_synth fof_synth.cpp
 // Run:    ./fof_synth --vowel a --f0 220 --dur 2.0 --out vowel_a.wav
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -182,6 +183,19 @@ static void usage() {
         "  --test-tone       write a 440Hz sine instead, to check WAV output\n");
 }
 
+// Parse a whole string as a finite double; false on empty, trailing junk, inf or nan.
+static bool parse_double(const std::string& s, double& out) {
+    try {
+        size_t pos = 0;
+        const double v = std::stod(s, &pos);
+        if (pos != s.size() || !std::isfinite(v)) return false;
+        out = v;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 int main(int argc, char** argv) {
     std::string vowel = "a", out_path = "out.wav";
     double f0 = 220.0, duration = 2.0, sample_rate = 48000.0;
@@ -192,14 +206,39 @@ int main(int argc, char** argv) {
         auto next = [&]() -> std::string {
             return (i + 1 < argc) ? argv[++i] : "";
         };
+        auto number = [&](double& dst) -> bool {
+            const std::string v = next();
+            if (parse_double(v, dst)) return true;
+            std::fprintf(stderr, "invalid value for %s: '%s'\n", a.c_str(), v.c_str());
+            return false;
+        };
         if      (a == "--vowel")      vowel = next();
-        else if (a == "--f0")         f0 = std::stod(next());
-        else if (a == "--dur")        duration = std::stod(next());
-        else if (a == "--sr")         sample_rate = std::stod(next());
+        else if (a == "--f0")         { if (!number(f0)) return 1; }
+        else if (a == "--dur")        { if (!number(duration)) return 1; }
+        else if (a == "--sr")         { if (!number(sample_rate)) return 1; }
         else if (a == "--out")        out_path = next();
         else if (a == "--test-tone")  tone = true;
         else if (a == "-h" || a == "--help") { usage(); return 0; }
         else { std::fprintf(stderr, "unknown option: %s\n", a.c_str()); return 1; }
+    }
+
+    // Reject values that would divide by zero, loop forever or overflow the WAV header.
+    if (sample_rate < 8000.0 || sample_rate > 192000.0) {
+        std::fprintf(stderr, "--sr must be between 8000 and 192000 Hz\n");
+        return 1;
+    }
+    if (duration <= 0.0 || duration > 600.0) {
+        std::fprintf(stderr, "--dur must be greater than 0 and at most 600 s\n");
+        return 1;
+    }
+    if (!tone && (f0 <= 0.0 || f0 >= sample_rate / 2.0)) {
+        std::fprintf(stderr, "--f0 must be greater than 0 and below sr/2 (%.0f Hz)\n",
+                     sample_rate / 2.0);
+        return 1;
+    }
+    if (out_path.empty()) {
+        std::fprintf(stderr, "--out needs a file name\n");
+        return 1;
     }
 
     std::vector<double> samples = tone
