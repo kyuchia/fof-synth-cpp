@@ -5,9 +5,6 @@
 //
 // Build:  g++ -std=c++17 -O2 -o fof_synth fof_synth.cpp
 // Run:    ./fof_synth --vowel a --f0 220 --dur 2.0 --out vowel_a.wav
-//
-// SCAFFOLD NOTE: everything except generate_grain() is infrastructure.
-// The synthesis core is deliberately left empty. See the TODO below.
 
 #include <cstdint>
 #include <cstdio>
@@ -44,24 +41,17 @@ static std::vector<Formant> vowel_table(const std::string& vowel) {
 }
 
 // ---------------------------------------------------------------------------
-// Synthesis core  <-- THIS IS THE PART YOU WRITE
+// Synthesis core
 // ---------------------------------------------------------------------------
 
 // Render one FOF grain for a single formant into `out`, starting at sample
 // `start`, and mix it in additively (overlap-add).
 //
-// TODO: implement. The grain is an excitation impulse response consisting of
-// a windowed attack followed by an exponentially decaying sinusoid at the
-// formant frequency. The decay rate comes from `bandwidth`; the attack shape
-// comes from `skirt`. This is the same maths as your Python version, so the
-// only new part is expressing it in C++: index into the vector, accumulate
-// with +=, and be careful not to run past out.size().
-//
-// Suggested order of work:
-//   1. compute the decay coefficient from f.bandwidth
-//   2. compute the attack length from f.skirt
-//   3. loop over grain samples, build the envelope, multiply by the sinusoid
-//   4. mix into out[start + n] with bounds checking
+// The grain is a damped sinusoid at the formant centre frequency with a
+// raised-cosine attack (Rodet 1984):
+//   attack (n <= pi/beta): 0.5*(1 - cos(beta*n)) * exp(-alpha*n) * sin(omega_c*n)
+//   decay  (n >  pi/beta): exp(-alpha*n) * sin(omega_c*n)
+// alpha = pi*BW/fs sets the -6 dB bandwidth; the grain is truncated at T60.
 static void generate_grain(std::vector<double>& out,
                            size_t start,
                            const Formant& f,
@@ -118,7 +108,7 @@ static std::vector<double> synthesise(const std::string& vowel,
     return buffer;
 }
 
-// Plain sine, so you can confirm the WAV writer works before the DSP exists.
+// Plain 440 Hz sine, for checking the WAV writer independently of the synthesis.
 static std::vector<double> test_tone(double duration, double sample_rate) {
     const size_t total = static_cast<size_t>(duration * sample_rate);
     std::vector<double> buffer(total);
@@ -128,7 +118,7 @@ static std::vector<double> test_tone(double duration, double sample_rate) {
 }
 
 // ---------------------------------------------------------------------------
-// WAV output (16-bit PCM mono) -- boilerplate, nothing to learn here
+// WAV output (16-bit PCM mono)
 // ---------------------------------------------------------------------------
 
 static void put_u32(std::vector<uint8_t>& v, uint32_t x) {
