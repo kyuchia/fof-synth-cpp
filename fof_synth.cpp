@@ -25,19 +25,27 @@ struct Formant {
     double amp;        // linear amplitude
 };
 
+// dB (relative to F1) to linear amplitude, 10^(dB/20), as in vowel_data.py.
+static double db_to_linear(double db) {
+    return std::pow(10.0, db / 20.0);
+}
+
 // Mandarin vowel formants, Chen & Wang 2011 (ported from vowel_data.py).
-// amp converted from dB to linear, 10^(dB/20):
-//   0 dB = 1.000, -7 = 0.447, -9 = 0.355, -12 = 0.251, -16 = 0.158
+// Amplitudes are given in dB, exactly as in the Python table, and converted
+// at run time so both implementations use identical linear values.
 // skirt field unused for now (beta is fixed at ~3 ms attack in generate_grain).
 static std::vector<Formant> vowel_table(const std::string& vowel) {
+    auto F = [](double freq, double bw, double amp_db) {
+        return Formant{freq, bw, 0.0, db_to_linear(amp_db)};
+    };
     if (vowel == "a")
-        return {{753, 100, 0, 1.000}, {1298, 120, 0, 0.447}, {3068, 150, 0, 0.251}};
+        return {F(753, 100, 0), F(1298, 120,  -7), F(3068, 150, -12)};
     if (vowel == "i")
-        return {{309,  90, 0, 1.000}, {2416, 110, 0, 0.355}, {3438, 130, 0, 0.158}};
+        return {F(309,  90, 0), F(2416, 110,  -9), F(3438, 130, -16)};
     if (vowel == "u")
-        return {{349,  80, 0, 1.000}, { 759, 100, 0, 0.355}, {2883, 120, 0, 0.158}};
+        return {F(349,  80, 0), F( 759, 100,  -9), F(2883, 120, -16)};
     if (vowel == "o")
-        return {{505,  90, 0, 1.000}, { 856, 110, 0, 0.447}, {3052, 130, 0, 0.251}};
+        return {F(505,  90, 0), F( 856, 110,  -7), F(3052, 130, -12)};
     return {};
 }
 
@@ -112,7 +120,13 @@ static std::vector<double> synthesise(const std::string& vowel,
     // error does not build up over long notes.
     const double period = sample_rate / f0;
     for (size_t p = 0; ; ++p) {
-        const double onset = static_cast<double>(p) * period;
+        double onset = static_cast<double>(p) * period;
+        // Snap onsets within 1e-6 samples of an integer (as in pitch_onsets()
+        // in fof_synthesis.py): otherwise float round-off decides whether
+        // ceil() starts the grain one sample later, which moves the T60
+        // truncation point by one sample.
+        const double nearest = std::round(onset);
+        if (std::fabs(onset - nearest) < 1e-6) onset = nearest;
         if (onset >= static_cast<double>(total)) break;
         for (const Formant& f : formants)
             generate_grain(buffer, onset, f, sample_rate);
