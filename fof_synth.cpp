@@ -45,16 +45,21 @@ static std::vector<Formant> vowel_table(const std::string& vowel) {
 // Synthesis core
 // ---------------------------------------------------------------------------
 
-// Render one FOF grain for a single formant into `out`, starting at sample
-// `start`, and mix it in additively (overlap-add).
+// Render one FOF grain for a single formant into `out`, starting at the
+// (possibly fractional) sample position `onset`, and mix it in additively
+// (overlap-add).
 //
 // The grain is a damped sinusoid at the formant centre frequency with a
-// raised-cosine attack (Rodet 1984):
-//   attack (n <= pi/beta): 0.5*(1 - cos(beta*n)) * exp(-alpha*n) * sin(omega_c*n)
-//   decay  (n >  pi/beta): exp(-alpha*n) * sin(omega_c*n)
+// raised-cosine attack (Rodet 1984), with k = time since onset in samples:
+//   attack (k <= pi/beta): 0.5*(1 - cos(beta*k)) * exp(-alpha*k) * sin(omega_c*k)
+//   decay  (k >  pi/beta): exp(-alpha*k) * sin(omega_c*k)
 // alpha = pi*BW/fs sets the -6 dB bandwidth; the grain is truncated at T60.
+//
+// The grain is evaluated analytically at k = idx - onset, so a fractional
+// onset needs no interpolation: this is what lets the pitch period be
+// non-integer.
 static void generate_grain(std::vector<double>& out,
-                           size_t start,
+                           double onset,
                            const Formant& f,
                            double sample_rate) {
     // Parameters (mirrors fof_burst.py)
@@ -68,17 +73,20 @@ static void generate_grain(std::vector<double>& out,
     if (fof_len < 64) fof_len = 64;        // minimum length
 
     // Attack duration in samples
-    const size_t k_a = static_cast<size_t>(std::round(M_PI / beta));
+    const double k_a = M_PI / beta;
+
+    // First output sample at or after the onset; k runs from (first - onset) in [0, 1).
+    const size_t first = static_cast<size_t>(std::ceil(onset));
 
     // Per-sample loop (replaces numpy vectorisation)
-    for (size_t n = 0; n < fof_len; ++n) {
-        const size_t idx = start + n;
-        if (idx >= out.size()) break;      // manual bounds check; C++ won't clip like a Python slice
+    for (size_t idx = first; idx < out.size(); ++idx) {   // bounds check: C++ won't clip like a Python slice
+        const double k = static_cast<double>(idx) - onset;
+        if (k >= static_cast<double>(fof_len)) break;
 
-        const double env     = std::exp(-alpha * static_cast<double>(n));
-        const double carrier = std::sin(omega_c * static_cast<double>(n));
-        const double attack  = (n <= k_a)
-            ? 0.5 * (1.0 - std::cos(beta * static_cast<double>(n)))
+        const double env     = std::exp(-alpha * k);
+        const double carrier = std::sin(omega_c * k);
+        const double attack  = (k <= k_a)
+            ? 0.5 * (1.0 - std::cos(beta * k))
             : 1.0;
 
         out[idx] += f.amp * attack * env * carrier;   // overlap-add
@@ -99,10 +107,16 @@ static std::vector<double> synthesise(const std::string& vowel,
     std::vector<double> buffer(total, 0.0);
 
     // One excitation per fundamental period; every formant fires a grain.
-    const size_t period = static_cast<size_t>(sample_rate / f0);
-    for (size_t start = 0; start < total; start += period)
+    // The period is kept fractional (no rounding to whole samples), and each
+    // onset is computed as p * period rather than accumulated, so rounding
+    // error does not build up over long notes.
+    const double period = sample_rate / f0;
+    for (size_t p = 0; ; ++p) {
+        const double onset = static_cast<double>(p) * period;
+        if (onset >= static_cast<double>(total)) break;
         for (const Formant& f : formants)
-            generate_grain(buffer, start, f, sample_rate);
+            generate_grain(buffer, onset, f, sample_rate);
+    }
 
     std::printf("Synthesising: %zu formants, f0=%.1fHz, %.1fs @ %.0fHz\n",
                 formants.size(), f0, duration, sample_rate);
